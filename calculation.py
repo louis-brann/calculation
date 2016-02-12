@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 from __future__ import division     # for automatic floating point div
 import random                       # for shuffling
-from copy import deepcopy               
+from copy import deepcopy
+from queue import Queue, PriorityQueue              
 
 """
 Calculation Player
@@ -17,6 +18,74 @@ Rules:  Draw one card at a time. If you cannot play on one of the foundations,
         from a waste heap to one of the foundations, not to another waste heap.
 """
 
+class CalculationBoard:
+        num_piles = 8
+
+        def __init__(self, cards_per_suit=13):
+            # Prepare the piles
+            foundations = [[i] for i in range(1,5)]
+            waste_heaps = [[] for i in range(4)]
+            self.piles = foundations + waste_heaps
+            self.last_used = 3 # Four foundations --> starts off with 
+            self.cards_per_suit = cards_per_suit
+
+        def valid_set(self, card, dest):
+            # Always allowed to set on a waste pile
+            if dest > 3:
+                return True
+            # Otherwise make sure it's a step away from the base
+            else:
+                foundation = self.piles[dest]
+                step = foundation[-1]
+                base = foundation[0]
+                return card == (step+base)%self.cards_per_suit or \
+                       card == (step+base)
+
+        def valid_move(self, src, dest):
+            if dest > 3:
+                print("Move destination must be a foundation")
+                return False
+            elif src < 4:
+                print("Cannot move from a foundation")
+                return False
+            else:
+                src_card = self.piles[src][-1]
+                return self.valid_set(src_card, dest)
+
+        def play_drawn(self, card, dest):
+            copy = deepcopy(self)
+            copy.piles[dest].append(card)
+            copy.last_used += 1
+            return copy
+
+        def move_card(self, src, dest):
+            copy = deepcopy(self)
+            card = copy.piles[src].pop()
+            copy.piles[dest].append(card)
+            return copy
+
+        def priority(self):
+            deck_size = self.cards_per_suit*4
+            n_founds = sum([len(found) for found in self.piles[:4]])
+            n_waste = sum([len(waste) for waste in self.piles[4:]])
+            return deck_size - n_founds + n_waste
+
+        def __lt__(self, other):
+            return self.priority() < other.priority()
+
+        def __str__(self):
+            string = "============\n" + \
+                     "Foundations:\n" + \
+                     "============\n"
+            for f in range(4):
+                string += str(self.piles[f]) + "\n"
+            string += "===========\n" + \
+                      "Waste heaps\n" + \
+                      "===========\n"
+            for w in range(4,8):
+                string += str(self.piles[w]) + "\n"
+            return string
+
 class Calculation:
     def __init__(self, cards_per_suit=13):
         self.values = list(range(1,cards_per_suit+1))
@@ -24,75 +93,70 @@ class Calculation:
         self.win_pos = [[win_stack.index(i) for win_stack in self.winning] for i in self.values]
 
         # Prepare the deck
-        self.deck = (self.values * 4)[4:]
-        random.shuffle(self.deck)
+        all_values = (self.values * 4)
+        non_foundation = all_values[4:]
+        random.shuffle(non_foundation)
+        self.deck = all_values[:4] + non_foundation
 
-    def play(self):
-        print("=== Starting game with deck ===")
-        print(self.deck)
+        self.cards_per_suit = cards_per_suit
 
-        boards = []
-        boards.append(CalculationBoard())
+    def is_winning(self, board):
+        return board.piles[:4] == self.winning
+
+    def play_bfs(self):
+        boards = PriorityQueue()
+        new_board = CalculationBoard(self.cards_per_suit)
+        boards.put((new_board.priority(), new_board))
         while boards:
-            board = boards.pop()
-            print("=== Current Board ===")
+            priority, board = boards.get()
+
+            print("=== Current board ===")
             print(board)
 
-            next_card = board.deck.pop()
+            # Stop if the board is already winning
+            if self.is_winning(board):
+                print("Won a board!")
+                return board
 
-            # Decide which waste heap is worst to play it on, stack that first
-            # so it gets played last
-            waste_depths = [(len(board.piles[i]), i) for i in range(5,9)]
-            waste_depths.sort(reverse=True)
-            for depth,pile in waste_depths:
-                boards.push(CalculationBoard.from_board_with_move(board,next_card,pile))
+            # Check if anything is playable from the waste heaps
+            for waste_i in range(4,8):
+                waste_heap = board.piles[waste_i]
+                if len(waste_heap) > 0:
+                    for found_i in range(4):
+                        if board.valid_move(waste_i, found_i):
+                            next_board = board.move_card(waste_i, found_i)
+                            boards.put((next_board.priority(), next_board))
 
-            # If the card is valid to go on a stack, make that move and push
-            # that new board
-            for base in range(1,5):
-                if board.is_move_valid(new_card, base):
-                    boards.push(CalculationBoard.from_board_with_move(board,next_card,base))
+            # Draw a card and do something with it
+            if board.last_used < len(self.deck)-1:
+                next_card = self.deck[board.last_used+1]
 
-    class CalculationBoard:
-        def __init__(self):
-            # Prepare the piles
-            self.foundations = [list(i) for i in range(1,4)]
-            self.waste_heaps = [[] for i in range(1,4)]
+                # Check all foundations
+                for found_i in range(4):
+                    if board.valid_set(next_card, found_i):
+                        next_board = board.play_drawn(next_card, found_i)
+                        boards.put((next_board.priority(), next_board))
 
-        def is_move_valid(self, card, foundation):
-            return card == self.foundations[foundation][-1]+foundation
+                # TODO: Rank waste piles
+                waste_ranks = [(len(board.piles[i]),i) for i in range(4,8)]
+                waste_ranks.sort()
 
-        def is_winning(self):
-            return self.foundations == Calculation.winning
+                # Place on waste piles in order
+                for weight,waste_i in waste_ranks:
+                    next_board = board.play_drawn(next_card, waste_i)
+                    boards.put((next_board.priority(), next_board))
 
-        def rank_move(self, card, pile):
-            # return -1 if not valid
-            if pile < 4 and not is_move_valid(self, card, pile):
-                return -1
-            
-            # Currently all valid moves are ranked one
-            # TODO: Make this more complex
-            return 1
-
-        def place_card(self, card, pile):
-            is_waste = pile/4
-            index = pile%4
-            if is_waste:
-                self.waste_heaps[index].append(card)
             else:
-                self.foundations[index].append(card)
+                print("Losing game!")
 
-        def from_board_with_move(board, card, pile):
-            copy = deepcopy(board)
-            copy.place_card(board,card,pile)
-            return copy
 
-        def __repr__(self):
-            string = ""
-            string.join([str(l)+"\n" for l in self.foundations])
-            string.join([str(l)+"\n" for l in self.waste_heaps])
-            return string
+    def play_dfs(self):
+        wins = []
+        boards = []
+
 
 calculation = Calculation(5)
 print(calculation.deck)
+calculation.play_bfs()
+
 
