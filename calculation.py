@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 from __future__ import division     # for automatic floating point div
 import random                       # for shuffling
-from copy import deepcopy
-from queue import Queue, PriorityQueue              
+from copy import deepcopy           # for static board states
+from queue import Queue, PriorityQueue # for keeping track of boards
+import sys                          # for main args
 
 """
 Calculation Player
@@ -36,10 +37,13 @@ class CalculationBoard:
             # Otherwise make sure it's a step away from the base
             else:
                 foundation = self.piles[dest]
-                step = foundation[-1]
-                base = foundation[0]
-                return card == (step+base)%self.cards_per_suit or \
-                       card == (step+base)
+                if len(foundation) >= self.cards_per_suit:
+                    return False
+                else:
+                    step = foundation[-1]
+                    base = foundation[0]
+                    return card == (step+base)%self.cards_per_suit or \
+                           card == (step+base)
 
         def valid_move(self, src, dest):
             if dest > 3:
@@ -154,9 +158,18 @@ class Calculation:
         wins = []
         boards = []
 
+def main(argv):
+    cards_per_suit = 5
 
-calculation = Calculation(5)
-print(calculation.deck)
-calculation.play_bfs()
+    if len(argv) > 1:
+        cards_per_suit = int(argv[1])
+
+    calculation = Calculation(cards_per_suit)
+    print(calculation.deck)
+
+    calculation.play_bfs()
+
+if __name__ == "__main__":
+    main(sys.argv)
 
 
