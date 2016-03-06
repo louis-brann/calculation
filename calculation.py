@@ -1,10 +1,12 @@
 #!/usr/bin/env python
-from __future__ import division     # for automatic floating point div
-import random                       # for shuffling
-from copy import deepcopy           # for static board states
-from queue import Queue, PriorityQueue # for keeping track of boards
-import sys                          # for main args
-from math import inf                # for max threshold
+from __future__ import division # for automatic floating point div
+import random                   # for shuffling
+from copy import deepcopy       # for static board states
+from queue import PriorityQueue # for keeping track of boards
+import sys                      # for main args
+from math import inf            # for max threshold
+from time import time           # for performance
+import csv                      # for formatted output
 
 """
 Calculation Player
@@ -22,6 +24,7 @@ Rules:  Draw one card at a time. If you cannot play on one of the foundations,
 
 class CalculationBoard:
         num_piles = 8
+        deck_i = 8
 
         def __init__(self, cards_per_suit=13):
             # Prepare the piles
@@ -31,6 +34,7 @@ class CalculationBoard:
             self.last_used = 3 # Four foundations --> starts off with 
             self.cards_per_suit = cards_per_suit
             self.n_moves = 0
+            self.moves = []
 
         def valid_set(self, card, dest):
             # Always allowed to set on a waste pile
@@ -63,6 +67,7 @@ class CalculationBoard:
             bcopy.piles[dest].append(card)
             bcopy.last_used += 1
             bcopy.n_moves += 1
+            bcopy.moves.append((CalculationBoard.deck_i, dest))
             return bcopy
 
         def move_card(self, src, dest):
@@ -70,6 +75,7 @@ class CalculationBoard:
             card = bcopy.piles[src].pop()
             bcopy.piles[dest].append(card)
             bcopy.n_moves += 1
+            bcopy.moves.append((src, dest))
             return bcopy
 
         def priority(self):
@@ -84,7 +90,7 @@ class CalculationBoard:
 
             cost_to_board = self.n_moves
             board_to_finish = n_deck + n_waste
-            return cost_to_board + board_to_finish
+            return cost_to_board + board_to_finish - n_founds
 
         def __lt__(self, other):
             return self.priority() < other.priority()
@@ -96,9 +102,11 @@ class CalculationBoard:
             return hash(str(self))
 
         def __str__(self):
-            string = "============\n" + \
-                     "Foundations:\n" + \
-                     "============\n"
+            string =  "Priority: " + str(self.priority()) + "\n"
+            string += "Num Moves: " + str(self.n_moves) + "\n"
+            string += "============\n" + \
+                      "Foundations:\n" + \
+                      "============\n"
             for f in range(4):
                 string += str(self.piles[f]) + "\n"
             string += "===========\n" + \
@@ -107,6 +115,9 @@ class CalculationBoard:
             for w in range(4,8):
                 string += str(self.piles[w]) + "\n"
             return string
+
+        def __repr__(self):
+            return str(self.piles)
 
 class Calculation:
     def __init__(self, cards_per_suit=13):
@@ -131,6 +142,11 @@ class Calculation:
     def is_winning(self, board):
         return board.piles[:4] == self.winning
 
+    def is_lost(self, board):
+        remaining_deck = self.deck[board.last_used+1:]
+
+        # Loop through the 
+
     def play_bfs(self):
         """
         Best-first Search, based on priority() as defined in CalculationBoard.
@@ -142,11 +158,9 @@ class Calculation:
         
         while boards:
             board = boards.get()
+            self.played.add(board)
 
-            if self.iters % 10000 == 0:
-                print("=== Current board ===")
-                print(board)
-            self.iters += 1
+            self.print_board(board)
 
             if self.is_winning(board):
                 return board
@@ -156,6 +170,7 @@ class Calculation:
                 if child not in self.played:
                     boards.put(child)
 
+
     def play_ida(self):
         """
         Iterative deepening algorithm to save on space
@@ -164,7 +179,7 @@ class Calculation:
         root = CalculationBoard(self.cards_per_suit)
         self.threshold = root.priority()
         self.next_threshold = inf
-        self.iters +=1
+        self.iters += 1
 
         # Start the search
         not_winning = True
@@ -176,23 +191,30 @@ class Calculation:
         return best_board
 
     def dfs(self, board):
-        self.iters += 1
-        if self.iters % 10000 == 0:
-            print("=== Current board ===")
-            print(board)
-
+        self.print_board(board)
+    
         # Children = boards one move away from this board
         children = self.children(board)
+        #print("Children:",str(children))
 
-        # Loop through the children
         for child in children:
-            cost = child.priority()
-            # If it is winning, we're done
+            # If it is winning, return that board
             if self.is_winning(child):
+                print("Found winner")
                 return (False, child)
+
+            # If the child has already lost, quit early
+            if self.is_lost(child):
+                break
+
             # If the child is worth expanding, do so
+            cost = child.priority()
             if cost <= self.threshold:
-                self.dfs(child)
+                not_winning, winner = self.dfs(child)
+                # Break out if child succeeded
+                if not not_winning:
+                    return not_winning, winner
+
             # If the child is not worth expanding, then it can at least
             # bound our future generations
             elif cost < self.next_threshold:
@@ -222,7 +244,6 @@ class Calculation:
                     next_board = board.play_drawn(next_card, found_i)
                     children.append(next_board)
 
-            # TODO: Rank waste piles
             waste_ranks = [(len(board.piles[i]),i) for i in range(4,8)]
             waste_ranks.sort()
 
@@ -233,17 +254,75 @@ class Calculation:
 
         return children
 
+    def print_board(self, board):
+        """
+        Function for printing the board every so often, usually only used 
+        for larger/longer games
+        """
+        self.iters += 1
+        if self.iters % 10000 == 0:
+            print("=== Current board ===")
+            print(board)
+        return
+
 def main(argv):
     cards_per_suit = 5
+    niters = 1
 
-    if len(argv) > 1:
+    if len(argv) > 2:
         cards_per_suit = int(argv[1])
+        if len(argv) > 2:
+            niters = int(argv[2])
 
-    calculation = Calculation(cards_per_suit)
-    print(calculation.deck)
+    print("Starting games with {0!s} cards per suit".format(cards_per_suit))
 
-    board = calculation.play_bfs()
-    print("Number of moves:", board.n_moves)
+    nboards = 0
+    decks = []
+    moves = []
+    times = []
+    for i in range(niters):
+        print("Game",i)
+
+        # Play and time a game of calculation
+        start = time()
+        calculation = Calculation(cards_per_suit)
+        print("Deck:", calculation.deck)
+        board = calculation.play_bfs()
+        end = time()
+
+        # Record all the data to output later
+        decks.append(calculation.deck)
+        moves.append(board.moves)
+        times.append(end-start)
+
+    print("Writing to file...")
+
+    human_readable(niters, decks, moves, times, cards_per_suit)
+
+def human_readable(niters, decks, moves, times, cards_per_suit):
+    """
+    Could replace the csv output if you want to be able to just look at the 
+    output, rather than have another program analyze it. Kept in a separate
+    function in case I ever want to use it again 
+    """
+    filename = "moves-{0!s}.txt".format(cards_per_suit)
+    with open(filename, 'w+') as output:
+        output.write("Cards per Suit: "+str(5)+"\n")
+        output.write("=================\n")
+        for i in range(niters):
+            deck = decks[i]
+            move = moves[i]
+            elapsed = times[i]
+            output.write("Deck:"+str(deck)+"\n")
+            output.write("Moves:"+str(move)+"\n")
+            output.write("Time elapsed:"+str(elapsed)+"\n")
+
+def program_readable(niters, decks, moves, times, cards_per_suit):
+    csv_name = "moves-{0!s}.csv".format(cards_per_suit)
+    with open(csv_name, 'w+') as csvfile:
+        writer = csv.writer(csvfile)
+        for i in range(niters):
+            writer.writerow([decks[i], moves[i], times[i]])
 
 if __name__ == "__main__":
     main(sys.argv)
