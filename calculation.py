@@ -22,6 +22,26 @@ Rules:  Draw one card at a time. If you cannot play on one of the foundations,
         from a waste heap to one of the foundations, not to another waste heap.
 """
 
+"""
+Playing strategies to potentially incorporate:
+----------------------------------------------
+1. Keep one pile open for a K
+2. Play onto waste piles intelligently
+    - Don't block something that comes before you in every pile (otherwise you lose)
+    - Weight the piles by how soon the cards come up, play onto piles that 
+      have the lowest
+        a) number of things coming up soon
+        b) sum of things coming up soon
+    - If you can play on something that comes directly after you, do
+
+Pruning strategies
+------------------
+1. Determine when you lose
+    - If a card is on top of another card that comes before it in all piles,
+      the game is over
+
+"""
+
 class CalculationBoard:
         num_piles = 8
         deck_i = 8
