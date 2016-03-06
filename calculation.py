@@ -141,6 +141,7 @@ class CalculationBoard:
 
 class Calculation:
     def __init__(self, cards_per_suit=13):
+        self.cards_per_suit = cards_per_suit
         self.values = list(range(1,cards_per_suit+1))
         self.winning = [[i if i==cards_per_suit else base*i%cards_per_suit for i in self.values] for base in range(1,5)]
         self.win_pos = [[win_stack.index(i) for win_stack in self.winning] for i in self.values]
@@ -151,13 +152,12 @@ class Calculation:
         random.shuffle(non_foundation)
         self.deck = all_values[:4] + non_foundation
 
-        self.cards_per_suit = cards_per_suit
+        self.played = set()     # Used to avoid redundant boards
+        self.iters = 0          # Used for printing, maybe stats
 
+        # IDA* thresholds
         self.threshold = inf
-        self.next_threshold = inf
-
-        self.played = set()
-        self.iters = 0
+        self.next_threshold = inf  
 
     def is_winning(self, board):
         return board.piles[:4] == self.winning
@@ -165,7 +165,10 @@ class Calculation:
     def is_lost(self, board):
         remaining_deck = self.deck[board.last_used+1:]
 
-        # Loop through the 
+        # TODO: Actually implement
+        # Loop through the waste piles and check if any have cards that block
+        # the card on all piles
+        return False
 
     def play_bfs(self):
         """
