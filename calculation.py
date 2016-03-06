@@ -1,9 +1,12 @@
 #!/usr/bin/env python
-from __future__ import division     # for automatic floating point div
-import random                       # for shuffling
-from copy import deepcopy           # for static board states
-from queue import Queue, PriorityQueue # for keeping track of boards
-import sys                          # for main args
+from __future__ import division # for automatic floating point div
+import random                   # for shuffling
+from copy import deepcopy       # for static board states
+from queue import PriorityQueue # for keeping track of boards
+import sys                      # for main args
+from math import inf            # for max threshold
+from time import time           # for performance
+import csv                      # for formatted output
 
 """
 Calculation Player
@@ -19,100 +22,155 @@ Rules:  Draw one card at a time. If you cannot play on one of the foundations,
         from a waste heap to one of the foundations, not to another waste heap.
 """
 
+"""
+Playing strategies to potentially incorporate:
+----------------------------------------------
+1. Keep one pile open for a K
+2. Play onto waste piles intelligently
+    - Don't block something that comes before you in every pile (otherwise you lose)
+    - Weight the piles by how soon the cards come up, play onto piles that 
+      have the lowest
+        a) number of things coming up soon
+        b) sum of things coming up soon
+    - If you can play on something that comes directly after you, do
+
+Pruning strategies
+------------------
+1. Determine when you lose
+    - If a card is on top of another card that comes before it in all piles,
+      the game is over
+
+Efficencies
+-----------
+1. Don't deep copy boards for every move
+2. Make deep copies cheaper 
+    - Store boards at certain points, and in between, store moves until that
+      point e.g. save boards at depths of 2, 4, 8, 16 ; calculate moves
+      between them until then
+3. Move priority function to Calculation game level, and have boards store
+   their priority instead of calculating it every time
+
+"""
+
 class CalculationBoard:
-        num_piles = 8
-        deck_i = 9
-        founds_i = range(0,4)
-        wastes_i = range(4,8)
+    """
+    A CalculationBoard keeps track of the foundation piles and the waste piles.
+    These are kept track of in self.piles. Each board is specific to a game
+    of Calculation, but all boards of a game share a deck. Thus, each
+    CalculationBoard only keeps an index of where it is in the deck. 
+    Each board also keeps track of its moves, which could at some point be
+    leveraged for data analysis/ML for smarter playing or for more efficient
+    storage of boards. Right now making a move makes a full copy of the board,
+    but it might be better to only copy the board every so often, and instead
+    have shells of boards that all go off a reference board, and then store 
+    the moves from that board.
+    """
 
-        def __init__(self, cards_per_suit=13):
-            self.cards_per_suit = cards_per_suit
+    num_piles = 8
+    deck_i = 8
 
-            # Prepare the piles
-            foundations = [[i] for i in range(1,5)]
-            waste_heaps = [[] for i in CalculationBoard.wastes_i]
-            self.piles = foundations + waste_heaps
+    def __init__(self, cards_per_suit=13):
+        # Prepare the piles
+        foundations = [[i] for i in range(1,5)]
+        waste_heaps = [[] for i in range(4)]
+        self.piles = foundations + waste_heaps
+        self.last_used = 3 # Four foundations --> starts off with 
+        self.cards_per_suit = cards_per_suit
+        self.n_moves = 0
+        self.moves = []
 
-            # Four foundations --> starts off with 4 cards used in the deck
-            self.last_used = 3 
-
-        def valid_dest(self, card, dest):
-            # Never allowed to play onto deck
-            if dest == CalculationBoard.deck_i:
+    def valid_set(self, card, dest):
+        # Always allowed to set on a waste pile
+        if dest > 3:
+            return True
+        # Otherwise make sure it's a step away from the base
+        else:
+            foundation = self.piles[dest]
+            if len(foundation) >= self.cards_per_suit:
                 return False
-            # Always allowed to set on a waste pile
-            elif dest in CalculationBoard.wastes_i:
-                return True
-            # On foundations, make sure it's a step away from the base
             else:
-                foundation = self.piles[dest]
-                if len(foundation) >= self.cards_per_suit:
-                    #print("Too many cards on foundation!")
-                    return False
-                else:
-                    step = foundation[-1]
-                    base = foundation[0]
-                    return card == (step+base)%self.cards_per_suit or \
-                           card == (step+base)
+                step = foundation[-1]
+                base = foundation[0]
+                return card == (step+base)%self.cards_per_suit or \
+                       card == (step+base)
 
-        def valid_src(self, src):
-            # Allowed to take from anywhere but foundations
-            if src in CalculationBoard.founds_i:
-                print("Can't play from foundation")
-                return False
+    def valid_move(self, src, dest):
+        if dest > 3:
+            print("Move destination must be a foundation")
+            return False
+        elif src < 4:
+            print("Cannot move from a foundation")
+            return False
+        else:
+            src_card = self.piles[src][-1]
+            return self.valid_set(src_card, dest)
 
-        def valid_move(self, src, dest):
-            return self.valid_src(src) and self.valid_dest(self.piles[src][-1],dest)
+    def play_drawn(self, card, dest):
+        bcopy = deepcopy(self)
+        bcopy.piles[dest].append(card)
+        bcopy.last_used += 1
+        bcopy.n_moves += 1
+        bcopy.moves.append((CalculationBoard.deck_i, dest))
+        return bcopy
 
-        def play_drawn(self, card, dest):
-            """
-            Given a card from the deck and a destination pile, plays the 
-            card to the destination pile and 
-            """
-            copy = deepcopy(self)
-            copy.piles[dest].append(card)
-            copy.last_used += 1
-            return copy
+    def move_card(self, src, dest):
+        bcopy = deepcopy(self)
+        card = bcopy.piles[src].pop()
+        bcopy.piles[dest].append(card)
+        bcopy.n_moves += 1
+        bcopy.moves.append((src, dest))
+        return bcopy
 
-        def move_card(self, src, dest):
-            """
-            Used for playing a card from one pile to another pile. Separate
-            from playing a card from the deck, because the deck is shared by
-            all boards, so figuring out what card it is different
-            """
-            copy = deepcopy(self)
-            card = copy.piles[src].pop()
-            copy.piles[dest].append(card)
-            return copy
+    def priority(self):
+        """
+        priority = cost to board + board to finish
+                    (n_moves)       ()
+        """
+        deck_size = self.cards_per_suit*4
+        n_deck = deck_size - (self.last_used+1)
+        n_founds = sum([len(found) for found in self.piles[:4]])
+        n_waste = sum([len(waste) for waste in self.piles[4:]])
 
-        def priority(self):
-            deck_size = self.cards_per_suit*4
-            n_in_deck = deck_size - (self.last_used+1)
-            n_founds = sum([len(found) for found in self.piles[:4]])
-            n_waste = sum([len(waste) for waste in self.piles[4:]])
-            return n_in_deck - n_founds + n_waste
+        cost_to_board = self.n_moves
+        board_to_finish = n_deck + n_waste
+        return cost_to_board + board_to_finish - n_founds
 
-        def __lt__(self, other):
-            return self.priority() < other.priority()
+    def __lt__(self, other):
+        return self.priority() < other.priority()
 
-        def __eq__(self, other):
-            return str(self)==str(other)
+    def __eq__(self, other):
+        return str(self) == str(other)
 
-        def __hash__(self):
-            return hash(str(self))
+    def __hash__(self):
+        return hash(str(self))
 
-        def __str__(self):
-            string = ""
-            # Foundations
-            for f in CalculationBoard.founds_i:
-                string += str(self.piles[f]) + "\n"
-            # Waste piles
-            for w in CalculationBoard.wastes_i:
-                string += str(self.piles[w]) + "\n"
-            return string
+    def __str__(self):
+        string =  "Priority: " + str(self.priority()) + "\n"
+        string += "Num Moves: " + str(self.n_moves) + "\n"
+        string += "============\n" + \
+                  "Foundations:\n" + \
+                  "============\n"
+        for f in range(4):
+            string += str(self.piles[f]) + "\n"
+        string += "===========\n" + \
+                  "Waste heaps\n" + \
+                  "===========\n"
+        for w in range(4,8):
+            string += str(self.piles[w]) + "\n"
+        return string
+
+    def __repr__(self):
+        return str(self.piles)
 
 class Calculation:
+    """
+    The Calculation class represents a game of Calculation. Each instance has
+    a specific deck. To play a game, create an instance to get a deck, and then
+    use the play_ida() for IDA* or play_bfs() for best-first search
+    """
+
     def __init__(self, cards_per_suit=13):
+        self.cards_per_suit = cards_per_suit
         self.values = list(range(1,cards_per_suit+1))
         self.winning = [[i if i==cards_per_suit else (base*i)%cards_per_suit for i in self.values] for base in range(1,4)]
         self.win_pos = [[win_stack.index(i) for win_stack in self.winning] for i in self.values]
@@ -123,7 +181,12 @@ class Calculation:
         random.shuffle(non_foundation)
         self.deck = all_values[:4] + non_foundation
 
-        self.cards_per_suit = cards_per_suit
+        self.played = set()     # Used to avoid redundant boards
+        self.iters = 0          # Used for printing, maybe stats
+
+        # IDA* thresholds
+        self.threshold = inf
+        self.next_threshold = inf  
 
         # Store played boards to avoid cycles
         self.played = set()
@@ -131,73 +194,193 @@ class Calculation:
     def is_winning(self, board):
         return board.piles[:4] == self.winning
 
+    def is_lost(self, board):
+        remaining_deck = self.deck[board.last_used+1:]
+
+        # TODO: Actually implement
+        # Loop through the waste piles and check if any have cards that block
+        # the card on all piles
+        return False
+
     def play_bfs(self):
+        """
+        Best-first Search, based on priority() as defined in CalculationBoard.
+        Returns the number of moves required to get to the winning board.
+        """
         boards = PriorityQueue()
         new_board = CalculationBoard(self.cards_per_suit)
-        boards.put((new_board.priority(), new_board))
-        counter = 0
+        boards.put(new_board)
+        
         while boards:
-            priority, board = boards.get()
+            board = boards.get()
             self.played.add(board)
 
-            if counter % 10000 == 0:
-                print("=== Current board ===")
-                print(board)
+            self.print_board(board)
 
-            # Stop if the board is already winning
             if self.is_winning(board):
-                print("Won a board!")
-                return counter
+                return board
 
-            # Check if anything is playable from the waste heaps
-            for waste_i in range(4,8):
-                waste_heap = board.piles[waste_i]
-                if len(waste_heap) > 0:
-                    for found_i in range(4):
-                        if board.valid_move(waste_i, found_i):
-                            next_board = board.move_card(waste_i, found_i)
-                            if next_board not in self.played:
-                                boards.put((next_board.priority(), next_board))
+            children = self.children(board)
+            for child in children:
+                if child not in self.played:
+                    boards.put(child)
 
-            # Draw a card and do something with it
-            if board.last_used < len(self.deck)-1:
-                next_card = self.deck[board.last_used+1]
+    def play_ida(self):
+        """
+        Iterative deepening algorithm to save on space
+        """
+        # Initial setup
+        root = CalculationBoard(self.cards_per_suit)
+        self.threshold = root.priority()
+        self.next_threshold = inf
+        self.iters += 1
 
-                # Check all foundations
+        # Start the search
+        not_winning = True
+        best_board = None
+        while not_winning:
+            not_winning, best_board = self.dfs(root)
+            self.threshold = self.next_threshold
+            self.next_threshold = inf
+        return best_board
+
+    def dfs(self, board):
+        self.print_board(board)
+    
+        # Children = boards one move away from this board
+        children = self.children(board)
+        #print("Children:",str(children))
+
+        for child in children:
+            # If it is winning, return that board
+            if self.is_winning(child):
+                print("Found winner")
+                return (False, child)
+
+            # If the child has already lost, quit early
+            if self.is_lost(child):
+                break
+
+            # If the child is worth expanding, do so
+            cost = child.priority()
+            if cost <= self.threshold:
+                not_winning, winner = self.dfs(child)
+                # Break out if child succeeded
+                if not not_winning:
+                    return not_winning, winner
+
+            # If the child is not worth expanding, then it can at least
+            # bound our future generations
+            elif cost < self.next_threshold:
+                self.next_threshold = cost
+
+        return (True, None)
+
+    def children(self, board):
+        children = []
+
+        # Check if anything is playable from the waste heaps
+        for waste_i in range(4,8):
+            waste_heap = board.piles[waste_i]
+            if len(waste_heap) > 0:
                 for found_i in range(4):
-                    if board.valid_dest(next_card, found_i):
-                        next_board = board.play_drawn(next_card, found_i)
-                        if next_board not in self.played: 
-                            boards.put((next_board.priority(), next_board))
+                    if board.valid_move(waste_i, found_i):
+                        next_board = board.move_card(waste_i, found_i)
+                        children.append(next_board)
 
-                # TODO: Rank waste piles
-                waste_ranks = [(len(board.piles[i]),i) for i in range(4,8)]
-                waste_ranks.sort()
+        # Draw a card and do something with it
+        if board.last_used < len(self.deck)-1:
+            next_card = self.deck[board.last_used+1]
 
-                # Place on waste piles in order
-                for weight,waste_i in waste_ranks:
-                    next_board = board.play_drawn(next_card, waste_i)
-                    if next_board not in self.played:
-                        boards.put((next_board.priority(), next_board))
+            # Check all foundations
+            for found_i in range(4):
+                if board.valid_set(next_card, found_i):
+                    next_board = board.play_drawn(next_card, found_i)
+                    children.append(next_board)
 
-            counter += 1
+            waste_ranks = [(len(board.piles[i]),i) for i in range(4,8)]
+            waste_ranks.sort()
+
+            # Place on waste piles in order
+            for weight,waste_i in waste_ranks:
+                next_board = board.play_drawn(next_card, waste_i)
+                children.append(next_board)
+
+        return children
+
+    def print_board(self, board):
+        """
+        Function for printing the board every so often, usually only used 
+        for larger/longer games
+        """
+        self.iters += 1
+        if self.iters % 10000 == 0:
+            print("=== Current board ===")
+            print(board)
+        return
+
+# Output Printing Functions
+
+def human_readable(niters, decks, moves, times, cards_per_suit):
+    """
+    Could replace the csv output if you want to be able to just look at the 
+    output, rather than have another program analyze it. Kept in a separate
+    function in case I ever want to use it again 
+    """
+    filename = "moves-{0!s}.txt".format(cards_per_suit)
+    with open(filename, 'w+') as output:
+        output.write("Cards per Suit: "+str(5)+"\n")
+        output.write("=================\n")
+        for i in range(niters):
+            deck = decks[i]
+            move = moves[i]
+            elapsed = times[i]
+            output.write("Deck:"+str(deck)+"\n")
+            output.write("Moves:"+str(move)+"\n")
+            output.write("Time elapsed:"+str(elapsed)+"\n")
+
+def program_readable(niters, decks, moves, times, cards_per_suit):
+    csv_name = "moves-{0!s}.csv".format(cards_per_suit)
+    with open(csv_name, 'w+') as csvfile:
+        writer = csv.writer(csvfile)
+        for i in range(niters):
+            writer.writerow([decks[i], moves[i], times[i]])
+
+# Main Function
 
 def main(argv):
     cards_per_suit = 5
+    niters = 1
 
-    if len(argv) > 1:
+    if len(argv) > 2:
         cards_per_suit = int(argv[1])
+        if len(argv) > 2:
+            niters = int(argv[2])
 
-    num_iters = 1
-    num_boards = 0
-    for i in range(num_iters):
-        print("New game!")
+    print("Starting games with {0!s} cards per suit".format(cards_per_suit))
+
+    nboards = 0
+    decks = []
+    moves = []
+    times = []
+    for i in range(niters):
+        print("Game",i)
+
+        # Play and time a game of calculation
+        start = time()
         calculation = Calculation(cards_per_suit)
-        print(calculation.deck)
+        print("Deck:", calculation.deck)
+        board = calculation.play_ida()
+        end = time()
 
-        num_boards += calculation.play_bfs()
+        # Record all the data to output later
+        decks.append(calculation.deck)
+        moves.append(board.moves)
+        times.append(end-start)
 
-    print("Average number of boards: ", num_boards/num_iters)
+    print("Writing to file...")
+
+    human_readable(niters, decks, moves, times, cards_per_suit)
 
 if __name__ == "__main__":
     main(sys.argv)
