@@ -44,13 +44,28 @@ Pruning strategies
 Efficencies
 -----------
 1. Don't deep copy boards for every move
-2. Make deep copies cheaper 
     - Store boards at certain points, and in between, store moves until that
       point e.g. save boards at depths of 2, 4, 8, 16 ; calculate moves
       between them until then
+2. Make deep copies cheaper 
 3. Move priority function to Calculation game level, and have boards store
    their priority instead of calculating it every time
 
+"""
+
+"""
+Statistics to Look At
+---------------------
+1. Branching factor of IDA at different board sizes. Is there a correlation?
+2. How many boards an algorithm goes through to find the solution?
+3. 
+"""
+
+"""
+Reports:
+1. Ordering which waste pile to try playing on first -- Looking at combos and
+   keeping a pile open for K finds a more optimal solution (less moves), but
+   it takes longer than simply using the length of the waste pile as the rank
 """
 
 class CalculationBoard:
@@ -312,21 +327,18 @@ class Calculation:
                     children.append(next_board)
 
             # Place on waste piles in order
-            waste_moves = self.simple_ranked_wastes(next_card, board)
+            waste_moves = self.ranked_wastes_k(next_card, board)
             children.extend(waste_moves)
 
         return children
 
+    # First form of ranking waste: by the length of the waste pile. This is 
+    # a decent proxy for how much you're actually going to be blocking by
+    # playing on that pile
     def simple_ranked_wastes(self, card, board):
         waste_lens = [(len(board.piles[i]),i) for i in range(4,8)]
         waste_lens.sort()
         return [board.play_drawn(card, w) for (l,w) in waste_lens]
-
-    def relatively_sooner(self, board, card, other_card):
-        remaining_founds = [self.winning[len(board.piles[i]):] for i in range(4)]
-        remaining_pos = [[found.index(i) for found in remaining_founds] for i in self.values]
-        avg_pos = [sum(r)/len(r) for r in remaining_pos]
-        return avg_pos[card-1] < avg_pos[card-1]
 
     def precedes(self, board, card, next_card):
         # Check if it will eventually follow it on any foundation
@@ -337,7 +349,7 @@ class Calculation:
                 return True
         return False
 
-    def ranked_wastes(self, card, board):
+    def ranked_wastes_short_term(self, card, board):
         waste_moves = []
         for waste_i in range(4,8):
             next_board = board.play_drawn(card, waste_i)
@@ -355,6 +367,19 @@ class Calculation:
                 # If it's not a king pile, try not to play a king there
                 elif not card == self.cards_per_suit:
                     waste_moves.append(next_board)
+        return waste_moves
+
+    # Keeping this version around in case it is more efficient than checking
+    # dependencies
+    def ranked_wastes_k(self, card, board):
+        # Place on waste piles in order
+        waste_moves = []
+        for waste_i in range(4,8):
+            # If it's a K  
+            k_pile_playable = (card == self.cards_per_suit or board.kings_seen == 4)
+            if waste_i != CalculationBoard.k_pile or k_pile_playable:
+                next_board = board.play_drawn(card, waste_i)
+                waste_moves.append(next_board)
         return waste_moves
 
     def print_board(self, board):
@@ -429,7 +454,7 @@ def main(argv):
         print("Game",i)
 
         # Play and time a game of calculation
-        calculation = Calculation(cards_per_suit)
+        calculation = Calculation(cards_per_suit, [1, 2, 3, 4, 1, 2, 4, 6, 4, 7, 7, 1, 3, 5, 4, 7, 1, 6, 5, 5, 3, 7, 5, 6, 6, 3, 2, 2])
         print("Deck:", calculation.deck)
         if mode == "bfs":
             start = time()
