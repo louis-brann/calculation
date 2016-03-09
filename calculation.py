@@ -7,6 +7,7 @@ import sys                      # for main args
 from math import inf            # for max threshold
 from time import time           # for performance
 import csv                      # for formatted output
+import os.path                  # for output files
 
 """
 Calculation Player
@@ -30,7 +31,7 @@ Playing strategies to potentially incorporate:
     - Don't block something that comes before you in every pile (otherwise you lose)
     - Weight the piles by how soon the cards come up, play onto piles that 
       have the lowest
-        a) number of things coming up soon
+        a) number of things coming up soon (threshold)
         b) sum of things coming up soon
     - If you can play on something that comes directly after you, do
 
@@ -68,6 +69,7 @@ class CalculationBoard:
 
     num_piles = 8
     deck_i = 8
+    k_pile = 4 # Try keeping one waste pile open
 
     def __init__(self, cards_per_suit=13):
         # Prepare the piles
@@ -78,6 +80,7 @@ class CalculationBoard:
         self.cards_per_suit = cards_per_suit
         self.n_moves = 0
         self.moves = []
+        self.kings_seen = 0
 
     def valid_set(self, card, dest):
         # Always allowed to set on a waste pile
@@ -111,6 +114,8 @@ class CalculationBoard:
         bcopy.last_used += 1
         bcopy.n_moves += 1
         bcopy.moves.append((CalculationBoard.deck_i, dest))
+        if card == self.cards_per_suit:
+            bcopy.kings_seen += 1
         return bcopy
 
     def move_card(self, src, dest):
@@ -145,8 +150,9 @@ class CalculationBoard:
         return hash(str(self))
 
     def __str__(self):
-        string =  "Priority: " + str(self.priority()) + "\n"
-        string += "Num Moves: " + str(self.n_moves) + "\n"
+        string =  "Priority: {0!s}\n".format(self.priority())
+        string += "Num Moves: {0!s}\n".format(self.n_moves)
+        string += "Progress: {0!s}/{1!s}\n".format(self.last_used+1, self.cards_per_suit*4)
         string += "============\n" + \
                   "Foundations:\n" + \
                   "============\n"
@@ -169,17 +175,17 @@ class Calculation:
     use the play_ida() for IDA* or play_bfs() for best-first search
     """
 
-    def __init__(self, cards_per_suit=13):
+    def __init__(self, cards_per_suit=13, deck=[]):
         self.cards_per_suit = cards_per_suit
         self.values = list(range(1,cards_per_suit+1))
-        self.winning = [[i if i==cards_per_suit else (base*i)%cards_per_suit for i in self.values] for base in range(1,4)]
+        self.winning = [[i if i==cards_per_suit else (base*i)%cards_per_suit for i in self.values] for base in range(1,5)]
         self.win_pos = [[win_stack.index(i) for win_stack in self.winning] for i in self.values]
 
         # Prepare the deck
-        all_values = (self.values * 4)
-        non_foundation = all_values[4:]
-        random.shuffle(non_foundation)
-        self.deck = all_values[:4] + non_foundation
+        if deck == []:
+            self.deck = Calculation.random_deck(cards_per_suit)
+        else:
+            self.deck = deck
 
         self.played = set()     # Used to avoid redundant boards
         self.iters = 0          # Used for printing, maybe stats
@@ -190,6 +196,14 @@ class Calculation:
 
         # Store played boards to avoid cycles
         self.played = set()
+
+    @staticmethod
+    def random_deck(cards_per_suit):
+        values = list(range(1,cards_per_suit+1))
+        all_values = (values * 4)
+        non_foundation = all_values[4:]
+        random.shuffle(non_foundation)
+        return all_values[:4] + non_foundation
 
     def is_winning(self, board):
         return board.piles[:4] == self.winning
@@ -249,7 +263,6 @@ class Calculation:
     
         # Children = boards one move away from this board
         children = self.children(board)
-        #print("Children:",str(children))
 
         for child in children:
             # If it is winning, return that board
@@ -298,15 +311,51 @@ class Calculation:
                     next_board = board.play_drawn(next_card, found_i)
                     children.append(next_board)
 
-            waste_ranks = [(len(board.piles[i]),i) for i in range(4,8)]
-            waste_ranks.sort()
-
             # Place on waste piles in order
-            for weight,waste_i in waste_ranks:
-                next_board = board.play_drawn(next_card, waste_i)
-                children.append(next_board)
+            waste_moves = self.simple_ranked_wastes(next_card, board)
+            children.extend(waste_moves)
 
         return children
+
+    def simple_ranked_wastes(self, card, board):
+        waste_lens = [(len(board.piles[i]),i) for i in range(4,8)]
+        waste_lens.sort()
+        return [board.play_drawn(card, w) for (l,w) in waste_lens]
+
+    def relatively_sooner(self, board, card, other_card):
+        remaining_founds = [self.winning[len(board.piles[i]):] for i in range(4)]
+        remaining_pos = [[found.index(i) for found in remaining_founds] for i in self.values]
+        avg_pos = [sum(r)/len(r) for r in remaining_pos]
+        return avg_pos[card-1] < avg_pos[card-1]
+
+    def precedes(self, board, card, next_card):
+        # Check if it will eventually follow it on any foundation
+        for i in range(4):
+            base = board.piles[i][0]
+            # If it follows the card and the card has not already been placed
+            if next_card == card + base and not card in board.piles[i]:
+                return True
+        return False
+
+    def ranked_wastes(self, card, board):
+        waste_moves = []
+        for waste_i in range(4,8):
+            next_board = board.play_drawn(card, waste_i)
+            if next_board not in self.played:
+                is_k_pile = (waste_i == CalculationBoard.k_pile)
+                waste_pile = board.piles[waste_i]
+                # If card precedes a card in some waste pile, play it there first
+                if len(waste_pile)>0 and self.precedes(board, card, board.piles[waste_i][-1]):
+                    waste_moves.insert(0, next_board)
+                # If it's the king pile, only play kings unless all kings have
+                # been seen
+                elif is_k_pile:
+                    if card == self.cards_per_suit or board.kings_seen == 4:
+                        waste_moves.append(next_board)
+                # If it's not a king pile, try not to play a king there
+                elif not card == self.cards_per_suit:
+                    waste_moves.append(next_board)
+        return waste_moves
 
     def print_board(self, board):
         """
@@ -321,15 +370,21 @@ class Calculation:
 
 # Output Printing Functions
 
-def human_readable(niters, decks, moves, times, cards_per_suit):
+def human_readable(niters, decks, moves, times, cards_per_suit, mode):
     """
     Could replace the csv output if you want to be able to just look at the 
     output, rather than have another program analyze it. Kept in a separate
     function in case I ever want to use it again 
     """
-    filename = "moves-{0!s}.txt".format(cards_per_suit)
+    version = 0
+    filebase = "moves-{0!s}-{1}-{2!s}".format(cards_per_suit, mode, version)
+    filename = filebase + ".txt"
+    while os.path.exists(filename):
+        version += 1
+        filebase = filebase[:-1] + str(version)
+        filename = filebase + ".txt"
     with open(filename, 'w+') as output:
-        output.write("Cards per Suit: "+str(5)+"\n")
+        output.write("Cards per Suit: "+str(cards_per_suit)+"\n")
         output.write("=================\n")
         for i in range(niters):
             deck = decks[i]
@@ -339,8 +394,14 @@ def human_readable(niters, decks, moves, times, cards_per_suit):
             output.write("Moves:"+str(move)+"\n")
             output.write("Time elapsed:"+str(elapsed)+"\n")
 
-def program_readable(niters, decks, moves, times, cards_per_suit):
-    csv_name = "moves-{0!s}.csv".format(cards_per_suit)
+def program_readable(niters, decks, moves, times, cards_per_suit, mode):
+    version = 0
+    csvbase = "moves-{0!s}-{1}-{2!s}".format(cards_per_suit, mode, version)
+    csvname = csvbase + ".txt"
+    while os.path.exists(csvname):
+        version += 1
+        csvbase = csvbase[:-1] + str(version)
+        csvname = csvbase + ".csv"
     with open(csv_name, 'w+') as csvfile:
         writer = csv.writer(csvfile)
         for i in range(niters):
@@ -351,6 +412,7 @@ def program_readable(niters, decks, moves, times, cards_per_suit):
 def main(argv):
     cards_per_suit = 5
     niters = 1
+    mode = "ida"
 
     if len(argv) > 2:
         cards_per_suit = int(argv[1])
@@ -367,11 +429,16 @@ def main(argv):
         print("Game",i)
 
         # Play and time a game of calculation
-        start = time()
         calculation = Calculation(cards_per_suit)
         print("Deck:", calculation.deck)
-        board = calculation.play_ida()
-        end = time()
+        if mode == "bfs":
+            start = time()
+            board = calculation.play_bfs()
+            end = time()
+        elif mode == "ida":
+            start = time()
+            board = calculation.play_ida()
+            end = time()
 
         # Record all the data to output later
         decks.append(calculation.deck)
@@ -380,7 +447,7 @@ def main(argv):
 
     print("Writing to file...")
 
-    human_readable(niters, decks, moves, times, cards_per_suit)
+    human_readable(niters, decks, moves, times, cards_per_suit, mode)
 
 if __name__ == "__main__":
     main(sys.argv)
