@@ -268,6 +268,7 @@ class Calculation:
         not_winning = True
         best_board = None
         while not_winning:
+            print("IDA start")
             not_winning, best_board = self.dfs(root)
             self.threshold = self.next_threshold
             self.next_threshold = inf
@@ -278,6 +279,7 @@ class Calculation:
     
         # Children = boards one move away from this board
         children = self.children(board)
+        children.sort()
 
         for child in children:
             # If it is winning, return that board
@@ -375,11 +377,16 @@ class Calculation:
         # Place on waste piles in order
         waste_moves = []
         for waste_i in range(4,8):
-            # If it's a K  
+            # Try only playing kings on K pile
             k_pile_playable = (card == self.cards_per_suit or board.kings_seen == 4)
-            if waste_i != CalculationBoard.k_pile or k_pile_playable:
+            if waste_i == CalculationBoard.k_pile:
+                if k_pile_playable:
+                    next_board = board.play_drawn(card, waste_i)
+                    waste_moves.append(next_board)
+            elif card != self.cards_per_suit:
                 next_board = board.play_drawn(card, waste_i)
                 waste_moves.append(next_board)
+
         return waste_moves
 
     def print_board(self, board):
@@ -402,7 +409,7 @@ def human_readable(niters, decks, moves, times, cards_per_suit, mode):
     function in case I ever want to use it again 
     """
     version = 0
-    filebase = "moves-{0!s}-{1}-{2!s}".format(cards_per_suit, mode, version)
+    filebase = "moves-{0!s}-{1}-{2!s}-sorted".format(cards_per_suit, mode, version)
     filename = filebase + ".txt"
     while os.path.exists(filename):
         version += 1
@@ -454,7 +461,10 @@ def main(argv):
         print("Game",i)
 
         # Play and time a game of calculation
-        calculation = Calculation(cards_per_suit, [1, 2, 3, 4, 1, 2, 4, 6, 4, 7, 7, 1, 3, 5, 4, 7, 1, 6, 5, 5, 3, 7, 5, 6, 6, 3, 2, 2])
+        calculation = Calculation(cards_per_suit)
+        # calculation = Calculation(cards_per_suit, [1, 2, 3, 4, 1, 2, 4, 6, 4, 7, 7, 1, 3, 5, 4, 7, 1, 6, 5, 5, 3, 7, 5, 6, 6, 3, 2, 2])
+        # TODO: Add in comparison mode, which keeps track of which
+        #           - Overall algorithm (IDA or BFS)
         print("Deck:", calculation.deck)
         if mode == "bfs":
             start = time()
