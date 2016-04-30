@@ -26,10 +26,10 @@ Rules:  Draw one card at a time. If you cannot play on one of the foundations,
 """
 Variables
     Priority
-        Progress
-            Num cards in foundation
+        Progress: Num cards in foundation piles (to a power?)
         Distance
-
+        Difficulty
+        Evenness
     Algorithm
         IDA*
         Best First Search
@@ -214,9 +214,14 @@ class CalculationBoard:
         ans = 0
         for found in self.piles[:4]:
             base_card = found[0]
-            next_card = self.nth_card(base_card, len(found))
+            found_len = len(found)
+            next_card = self.nth_card(base_card, found_len)
 
             for i in range(4):
+                # Hack to avoid going off the end
+                if next_card == base_card:
+                    break
+
                 min_dist = None
 
                 for waste in self.piles[4:]:
@@ -229,7 +234,7 @@ class CalculationBoard:
 
 
                 if min_dist != None:
-                    ans += min_dist 
+                    ans += min_dist * (self.cards_per_suit - found_len - i)
 
                 next_card = (next_card + base_card) % self.cards_per_suit
         return ans
@@ -246,8 +251,8 @@ class CalculationBoard:
         found_sizes = [len(f) for f in self.piles[:4]]
         waste_sizes = [len(w) for w in self.piles[4:]]
 
-        progress = 2*sum(found_sizes)    # Num cards in foundations
-        distance = ((self.cards_per_suit*4) - (self.last_used+1))/2  # Num cards left in deck
+        progress = sum(found_sizes)    # Num cards in foundations
+        distance = (self.cards_per_suit*4) - (self.last_used+1)  # Num cards left in deck
 
         found_diff = max(found_sizes) - min(found_sizes)
         waste_diff = max(waste_sizes) - min(waste_sizes)
@@ -255,8 +260,12 @@ class CalculationBoard:
 
         difficulty = self.buried_cost()  # How hard it is to get the next few
                                         # cards off the waste piles
-    
-        return distance + difficulty + evenness - progress
+
+        a = 1
+        b = 1
+        c = 1
+        d = 1
+        return distance*a + difficulty*b + evenness*c - progress*d
 
     # Note this equality/less than disparity is terrible style
     def __lt__(self, other):
@@ -433,7 +442,7 @@ class Calculation:
                     children.append(next_board)
 
             # Place on waste piles in order
-            waste_moves = self.ranked_wastes_simple(next_card, board)
+            waste_moves = self.ranked_wastes_short_term(next_card, board)
             children.extend(waste_moves)
 
         return children
@@ -447,11 +456,15 @@ class Calculation:
         return [board.play_drawn(card, w) for (l,w) in waste_lens]
 
     def precedes(self, board, card, next_card):
+        # K precedes nothing
+        if card == 0:
+            return False
+
         # Check if it will eventually follow it on any foundation
         for i in range(4):
             base = board.piles[i][0]
             # If it follows the card and the card has not already been placed
-            if next_card == card + base and not card in board.piles[i]:
+            if next_card == card + base and card not in board.piles[i]:
                 return True
         return False
 
@@ -468,7 +481,7 @@ class Calculation:
                 # If it's the king pile, only play kings unless all kings have
                 # been seen
                 elif is_k_pile:
-                    if card == self.cards_per_suit or board.kings_seen == 4:
+                    if card == 0 or board.kings_seen == 4:
                         waste_moves.append(next_board)
                 # If it's not a king pile, try not to play a king there
                 elif not card == self.cards_per_suit:
@@ -487,7 +500,7 @@ class Calculation:
                 if k_pile_playable:
                     next_board = board.play_drawn(card, waste_i)
                     waste_moves.append(next_board)
-            elif card != self.cards_per_suit:
+            elif card != 0:
                 next_board = board.play_drawn(card, waste_i)
                 waste_moves.append(next_board)
 
@@ -569,8 +582,6 @@ def main(argv):
         # Play and time a game of calculation
         calculation = Calculation(cards_per_suit)
         # calculation = Calculation(cards_per_suit, [1, 2, 3, 4, 1, 2, 4, 6, 4, 7, 7, 1, 3, 5, 4, 7, 1, 6, 5, 5, 3, 7, 5, 6, 6, 3, 2, 2])
-        # TODO: Add in comparison mode, which keeps track of which
-        #           - Overall algorithm (IDA or BFS)
         print("Deck:", calculation.deck)
         if mode == "bfs":
             start = time()
