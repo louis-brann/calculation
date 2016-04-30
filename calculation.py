@@ -24,6 +24,32 @@ Rules:  Draw one card at a time. If you cannot play on one of the foundations,
 """
 
 """
+Variables
+    Priority
+        Progress
+            Num cards in foundation
+        Distance
+
+    Algorithm
+        IDA*
+        Best First Search
+        Monte Carlo Search
+    Children
+        simple      (rank piles by length)
+        kings       (save a pile for kings)
+        short_term  (favor piles that create chains)
+"""
+
+"""
+Priority Ideas
+--------------
+1. Foundation Lengths
+    - To a power?
+    - Favor even piles?
+2. Waste pile lengths
+3. Waste pile dependencies
+    - Don't bury cards we need soon
+
 Playing strategies to potentially incorporate:
 ----------------------------------------------
 1. Keep one pile open for a K
@@ -50,7 +76,6 @@ Efficencies
 2. Make deep copies cheaper 
 3. Move priority function to Calculation game level, and have boards store
    their priority instead of calculating it every time
-
 """
 
 """
@@ -58,7 +83,6 @@ Statistics to Look At
 ---------------------
 1. Branching factor of IDA at different board sizes. Is there a correlation?
 2. How many boards an algorithm goes through to find the solution?
-3. 
 """
 
 """
@@ -97,43 +121,74 @@ class CalculationBoard:
         self.moves = []
         self.kings_seen = 0
 
+    def is_foundation(self, pile_i):
+        return pile_i < 4
+
+    def is_waste(self, pile_i):
+        return pile_i > 3
+
+    def nth_card(self, base, n):
+        """
+        Only valid for foundations
+        """
+        return (base + base*n) % self.cards_per_suit
+
+    def next_card(self, pile_i):
+        """
+        Only valid for foundations
+        """
+        pile = self.piles[pile_i]
+        return self.nth_card(pile[0], len(pile))
+
+    def old_matches_next_card(self, pile_i):
+        foundation = self.piles[dest]
+        if len(foundation) >= self.cards_per_suit:
+            return False
+        else:
+            step = foundation[-1]
+            base = foundation[0]
+            return card == (step+base)%self.cards_per_suit
+
     def valid_set(self, card, dest):
         # Always allowed to set on a waste pile
-        if dest > 3:
+        if self.is_waste(dest):
             return True
-        # Otherwise make sure it's a step away from the base
         else:
-            foundation = self.piles[dest]
-            if len(foundation) >= self.cards_per_suit:
-                return False
-            else:
-                step = foundation[-1]
-                base = foundation[0]
-                return card == (step+base)%self.cards_per_suit or \
-                       card == (step+base)
+            return len(self.piles[dest])<self.cards_per_suit and card == self.next_card(dest) 
+
+        # If we didn't return True yet, it is not valid
+        return False
 
     def valid_move(self, src, dest):
-        if dest > 3:
-            print("Move destination must be a foundation")
-            return False
-        elif src < 4:
-            print("Cannot move from a foundation")
-            return False
-        else:
-            src_card = self.piles[src][-1]
-            return self.valid_set(src_card, dest)
+        """
+        A move must be from a waste pile to a foundation pile
+        """
+        # Must move from waste pile
+        valid_source = self.is_waste(src)
+        # Can't move to another waste pile
+        valid_dest = self.is_foundation(dest)
+        # Make sure the card is allowed for the move
+        valid_transition = self.valid_set(self.piles[src][-1], dest)
+        
+        return valid_source and valid_dest and valid_transition
 
     def play_drawn(self, card, dest):
+        """
+        Returns a new board with a card played from the deck onto a pile
+        """
         bcopy = deepcopy(self)
         bcopy.piles[dest].append(card)
         bcopy.last_used += 1
         bcopy.n_moves += 1
         bcopy.moves.append((CalculationBoard.deck_i, dest))
-        if card == self.cards_per_suit:
+        if card == 0:
             bcopy.kings_seen += 1
         return bcopy
 
     def move_card(self, src, dest):
+        """
+        Returns a new board with a card moved from src to dest
+        """
         bcopy = deepcopy(self)
         card = bcopy.piles[src].pop()
         bcopy.piles[dest].append(card)
@@ -141,20 +196,69 @@ class CalculationBoard:
         bcopy.moves.append((src, dest))
         return bcopy
 
-    def priority(self):
+    def len_priority(self):
         """
         priority = cost to board + board to finish
                     (n_moves)       ()
         """
         deck_size = self.cards_per_suit*4
         n_deck = deck_size - (self.last_used+1)
-        n_founds = sum([len(found) for found in self.piles[:4]])
-        n_waste = sum([len(waste) for waste in self.piles[4:]])
+        n_founds = sum(map(len, self.piles[:4]))
+        n_waste = sum(map(len, self.piles[4:]))
 
         cost_to_board = self.n_moves
         board_to_finish = n_deck + n_waste
-        return cost_to_board + board_to_finish - n_founds
+        return cost_to_board + board_to_finish
 
+    def buried_cost(self):
+        ans = 0
+        for found in self.piles[:4]:
+            base_card = found[0]
+            next_card = self.nth_card(base_card, len(found))
+
+            for i in range(4):
+                min_dist = None
+
+                for waste in self.piles[4:]:
+                    if next_card in waste:
+                        dist = len(waste) - waste.index(next_card)
+                        if min_dist != None:
+                            min_dist = min(min_dist, dist)
+                        else:
+                            min_dist = dist
+
+
+                if min_dist != None:
+                    ans += min_dist 
+
+                next_card = (next_card + base_card) % self.cards_per_suit
+        return ans
+
+    def priority(self):
+        """
+            Progress to goal: 
+                how many cards in foundation piles
+            Distance to goal: 
+                how many cards are left in deck (at least)
+            Difficulty: 
+                how buried are cards that are needed soon?
+        """
+        found_sizes = [len(f) for f in self.piles[:4]]
+        waste_sizes = [len(w) for w in self.piles[4:]]
+
+        progress = 2*sum(found_sizes)    # Num cards in foundations
+        distance = ((self.cards_per_suit*4) - (self.last_used+1))/2  # Num cards left in deck
+
+        found_diff = max(found_sizes) - min(found_sizes)
+        waste_diff = max(waste_sizes) - min(waste_sizes)
+        evenness = (found_diff + waste_diff)/4
+
+        difficulty = self.buried_cost()  # How hard it is to get the next few
+                                        # cards off the waste piles
+    
+        return distance + difficulty + evenness - progress
+
+    # Note this equality/less than disparity is terrible style
     def __lt__(self, other):
         return self.priority() < other.priority()
 
@@ -167,7 +271,7 @@ class CalculationBoard:
     def __str__(self):
         string =  "Priority: {0!s}\n".format(self.priority())
         string += "Num Moves: {0!s}\n".format(self.n_moves)
-        string += "Progress: {0!s}/{1!s}\n".format(self.last_used+1, self.cards_per_suit*4)
+        string += "Drawn: {0!s}/{1!s}\n".format(self.last_used+1, self.cards_per_suit*4)
         string += "============\n" + \
                   "Foundations:\n" + \
                   "============\n"
@@ -192,8 +296,8 @@ class Calculation:
 
     def __init__(self, cards_per_suit=13, deck=[]):
         self.cards_per_suit = cards_per_suit
-        self.values = list(range(1,cards_per_suit+1))
-        self.winning = [[i if i==cards_per_suit else (base*i)%cards_per_suit for i in self.values] for base in range(1,5)]
+        self.values = list(range(1,cards_per_suit)) + [0]
+        self.winning = [[(base*i)%cards_per_suit for i in self.values] for base in range(1,5)]
         self.win_pos = [[win_stack.index(i) for win_stack in self.winning] for i in self.values]
 
         # Prepare the deck
@@ -214,7 +318,7 @@ class Calculation:
 
     @staticmethod
     def random_deck(cards_per_suit):
-        values = list(range(1,cards_per_suit+1))
+        values = list(range(1, cards_per_suit)) + [0]
         all_values = (values * 4)
         non_foundation = all_values[4:]
         random.shuffle(non_foundation)
@@ -329,7 +433,7 @@ class Calculation:
                     children.append(next_board)
 
             # Place on waste piles in order
-            waste_moves = self.ranked_wastes_k(next_card, board)
+            waste_moves = self.ranked_wastes_simple(next_card, board)
             children.extend(waste_moves)
 
         return children
@@ -337,7 +441,7 @@ class Calculation:
     # First form of ranking waste: by the length of the waste pile. This is 
     # a decent proxy for how much you're actually going to be blocking by
     # playing on that pile
-    def simple_ranked_wastes(self, card, board):
+    def ranked_wastes_simple(self, card, board):
         waste_lens = [(len(board.piles[i]),i) for i in range(4,8)]
         waste_lens.sort()
         return [board.play_drawn(card, w) for (l,w) in waste_lens]
@@ -378,7 +482,7 @@ class Calculation:
         waste_moves = []
         for waste_i in range(4,8):
             # Try only playing kings on K pile
-            k_pile_playable = (card == self.cards_per_suit or board.kings_seen == 4)
+            k_pile_playable = (card == 0 or board.kings_seen == 4)
             if waste_i == CalculationBoard.k_pile:
                 if k_pile_playable:
                     next_board = board.play_drawn(card, waste_i)
@@ -409,12 +513,13 @@ def human_readable(niters, decks, moves, times, cards_per_suit, mode):
     function in case I ever want to use it again 
     """
     version = 0
-    filebase = "moves-{0!s}-{1}-{2!s}-sorted".format(cards_per_suit, mode, version)
+    filebase = "output/priority-{0!s}-{1}-sorted-{2!s}".format(cards_per_suit, mode, version)
     filename = filebase + ".txt"
     while os.path.exists(filename):
         version += 1
         filebase = filebase[:-1] + str(version)
         filename = filebase + ".txt"
+    print("Writing to", filename)
     with open(filename, 'w+') as output:
         output.write("Cards per Suit: "+str(cards_per_suit)+"\n")
         output.write("=================\n")
@@ -428,7 +533,7 @@ def human_readable(niters, decks, moves, times, cards_per_suit, mode):
 
 def program_readable(niters, decks, moves, times, cards_per_suit, mode):
     version = 0
-    csvbase = "moves-{0!s}-{1}-{2!s}".format(cards_per_suit, mode, version)
+    csvbase = "data/priority1-{0!s}-{1}-{2!s}".format(cards_per_suit, mode, version)
     csvname = csvbase + ".txt"
     while os.path.exists(csvname):
         version += 1
@@ -446,7 +551,8 @@ def main(argv):
     niters = 1
     mode = "ida"
 
-    if len(argv) > 2:
+    if len(argv) > 1:
+        print(argv[1])
         cards_per_suit = int(argv[1])
         if len(argv) > 2:
             niters = int(argv[2])
