@@ -33,6 +33,8 @@ class CalculationBoard:
         WASTE = 2
         DECK = 3
 
+    # TODO: do we need to pass in cards_per_suit and deck?
+    # they were relics of tree-searching, but that may not be necessary.
     def __init__(self, cards_per_suit=13, deck=None):
         self.foundations = [[i] for i in range(1, 1+CalculationBoard.NUM_FOUNDATIONS)]
         self.wastes = [[] for i in range(CalculationBoard.NUM_WASTES)]
@@ -40,7 +42,7 @@ class CalculationBoard:
         self.card_values = list(range(1, cards_per_suit)) + [0]
         self.winning = [[(base*i)%cards_per_suit for i in self.card_values] for base in range(1, 1+CalculationBoard.NUM_FOUNDATIONS)]
 
-        self.deck = deck if deck else CalculationBoard.random_deck(cards_per_suit)
+        self.deck = deck if deck else CalculationBoard.generate_random_deck(cards_per_suit)
 
     def __eq__(self, other):
         return self.foundations == other.foundations and self.wastes == other.wastes and self.deck == other.deck
@@ -49,7 +51,7 @@ class CalculationBoard:
         return str([self.foundations, self.wastes, self.deck])
 
     @staticmethod
-    def random_deck(cards_per_suit):
+    def generate_random_deck(cards_per_suit):
         values = list(range(1, cards_per_suit)) + [0]
         all_values = (values * 4)
         non_foundation = all_values[4:]
@@ -122,11 +124,11 @@ class CalculationBoard:
         else:
             raise InvalidMoveException("Unexpected move source pile type: {}".format(src.pile_type))
         
-        dest = move.src
+        dest = move.dest
         if dest.pile_type == CalculationBoard.PileTypes.FOUNDATION:
             new_board.foundations[dest.pile_index].append(card)
         elif dest.pile_type == CalculationBoard.PileTypes.WASTE:
-            new_board.waste[dest.pile_index].append(card)
+            new_board.wastes[dest.pile_index].append(card)
         else:
             raise InvalidMoveException("Unexpected move dest pile type: {}".format(dest.pile_type))
 
