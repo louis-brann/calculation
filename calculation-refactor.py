@@ -1,7 +1,10 @@
 #!/usr/bin/env python
-import random                      # for shuffling
-from copy import deepcopy          # for static board states
-from collections import namedtuple # for simple classes
+import random                            # for shuffling
+from copy import deepcopy                # for static board states
+from collections import namedtuple       # for simple classes
+from queue import PriorityQueue          # for BFSSolver board ordering
+from dataclasses import dataclass, field # for prioritizing boards
+from math import inf                     # for max threshold
 
 """
 Calculation Player
@@ -67,6 +70,10 @@ class CalculationBoard:
 
     def __repr__(self):
         return str([self.foundations, self.wastes, self.deck])
+
+    # So it can be used in sets
+    def __hash__(self):
+        return hash(str(self))
 
     @staticmethod
     def generate_random_deck(cards_per_suit):
@@ -161,6 +168,10 @@ class CalculationBoard:
 
         return new_board
 
+    def buried_cost(self):
+        # TODO
+        return 0
+
 class CalculationPlayer:
     def choose_best_move(self, possible_moves):
         """
@@ -177,7 +188,7 @@ class GreedyPlayer(CalculationPlayer):
     def choose_best_move(self, possible_moves):
         # list of (weight, move)
         weighted_moves = [(self.get_move_weight(move), move) for move in possible_moves]
-        weighted_moves.sort()
+        weighted_moves.sort(key=lambda x: x[0])
         return weighted_moves[0][1]
 
     def get_move_weight(self, move):
@@ -186,42 +197,158 @@ class GreedyPlayer(CalculationPlayer):
         else:
             return 2
 
+class CalculationSolver:
+  def __init__(self, board):
+    self.starting_board = deepcopy(board)
+    self.played = set()
+    self.moves = []
+
+  def solve(self):
+    pass
+
+@dataclass(order=True)
+class PrioritizedBoard:
+  priority: int
+  board: CalculationBoard=field(compare=False)
+
+def old_priority(board):
+  foundation_lens = list(map(len, board.foundations))
+  waste_lens = list(map(len, board.wastes))
+  
+  progress = sum(foundation_lens)
+  
+  deck_size = board.cards_per_suit * CalculationBoard.NUM_SUITS
+  distance = deck_size - len(board.deck)
+  
+  foundation_diff = max(foundation_lens) - min(foundation_lens)
+  waste_diff = max(waste_lens) - min(waste_lens)
+  evenness = (foundation_diff + waste_diff)/4
+
+  difficulty = 1 # TODO: buried costs
+
+  return distance + difficulty + evenness - progress
+
+class BFSSolver(CalculationSolver):
+  def __init__(self, board, priority_func):
+    super().__init__(board)
+    self.priority = priority_func
+
+  def solve(self):
+    boards = PriorityQueue()
+    board = self.starting_board
+    pb = PrioritizedBoard(self.priority(board), board)
+    boards.put(pb)
+    
+    while boards:
+      pb = boards.get()
+      board = pb.board
+      self.played.add(board)
+
+      print(str(board))
+
+      if board.is_winning():
+        return board
+
+      for move in CalculationBoard.get_possible_moves(board):
+        child_board = CalculationBoard.apply_move_to_board(board, move)
+        if child_board not in self.played:
+          pb = PrioritizedBoard(self.priority(child_board), child_board)
+          boards.put(pb)
+
+class IDASolver(CalculationSolver):
+  def __init__(self, board, priority_func):
+    super().__init__(board)
+    self.priority = priority_func
+
+  def solve(self):
+    root = self.starting_board
+    self.threshold = self.priority(root)
+    self.next_threshold = inf
+    self.iters = 0
+
+    # Start the search
+    not_winning = True
+    best_board = None
+    while not_winning:
+      not_winning, best_board = self.dfs(root)
+      self.threshold = self.next_threshold
+      self.next_threshold = inf
+    return best_board
+
+  def dfs(self, board):
+    possible_moves = board.get_possible_moves()
+    children = [CalculationBoard.apply_move_to_board(board, move) for move in possible_moves]
+    # TODO: sort children?
+    for child in children:
+      # If winning, return that board
+      if child.is_winning():
+        return (False, child)
+
+      # TODO: If child has already lost quit early
+
+      # If child is worth expanding, do so
+      cost = self.priority(child)
+      if cost <= self.threshold:
+        not_winning, winner = self.dfs(child)
+        # Break out if child succeeded
+        if not not_winning:
+          return not_winning, winner
+
+      # If the child is not worth expanding, then it can at least
+      # bound our future generations
+      elif cost < self.next_threshold:
+        self.next_threshold = cost
+
+    return (True, None)
+
+
+
+
 def play_game(board, player):
     """
     Automates playthrough from board state with given player's playing strategy
     """
-    print "===== STARTING ====="
+    print("===== STARTING =====")
     while not board.is_winning():
-        print str(board)
+        print(str(board))
         possible_moves = board.get_possible_moves()
         if not possible_moves:
-            print "===== LOST :( ====="
+            print("===== LOST :( =====")
             return False
 
         move = player.choose_best_move(possible_moves)
         new_board = CalculationBoard.apply_move_to_board(board, move)
         board = new_board
 
-    print str(board)
-    print "===== WON!!! :D ====="
+    print(str(board))
+    print("===== WON!!! :D =====")
     return True
     # TODO: keep track of moves
 
 # Main Function
 
+def compare_players(player1, player2, cards_per_suit, num_games):
+  results1 = []
+  results2 = []
+  for game in range(num_games):
+    board = CalculationBoard(cards_per_suit)
+    results1.append(play_game(board, player1))
+    results2.append(play_game(board, player2))
+  print("Player 1 won {0} games".format(results1.count(True)))
+  print("Player 2 won {0} games".format(results2.count(True)))
+
 def main():
     cards_per_suit = 5
     board = CalculationBoard(cards_per_suit)
     player = RandomPlayer()
+    player2 = GreedyPlayer()
+    compare_players(player, player2, cards_per_suit, 5)
 
-    num_attempts = 0
-    max_attempts_per_game = 5
-    while num_attempts < max_attempts_per_game:
-        result = play_game(board, player)
-        if result:
-            print "YAYYYY"
-            return
-        num_attempts += 1
+    bfs = BFSSolver(board, old_priority)
+    bfs.solve()
+
+    ida = IDASolver(board, old_priority)
+    ida.solve()
 
 if __name__ == "__main__":
     main()
