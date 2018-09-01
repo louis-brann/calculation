@@ -65,6 +65,8 @@ class CalculationBoard:
 
         self.deck = deck if deck else CalculationBoard.generate_random_deck(cards_per_suit)
 
+        self.moves = []
+
     def __eq__(self, other):
         return self.foundations == other.foundations and self.wastes == other.wastes and self.deck == other.deck
 
@@ -166,11 +168,12 @@ class CalculationBoard:
         else:
             raise InvalidMoveException("Unexpected move dest pile type: {}".format(dest.pile_type))
 
+        new_board.moves.append(move)
+
         return new_board
 
-    def buried_cost(self):
-        # TODO
-        return 0
+
+
 
 class CalculationPlayer:
     def choose_best_move(self, possible_moves):
@@ -197,11 +200,15 @@ class GreedyPlayer(CalculationPlayer):
         else:
             return 2
 
+
+
+
+
 class CalculationSolver:
   def __init__(self, board):
     self.starting_board = deepcopy(board)
     self.played = set()
-    self.moves = []
+    self.limit = (board.NUM_SUITS * board.cards_per_suit) ** 5
 
   def solve(self):
     pass
@@ -228,6 +235,20 @@ def old_priority(board):
 
   return distance + difficulty + evenness - progress
 
+def distance_traveled(board):
+    deck_size = board.cards_per_suit * CalculationBoard.NUM_SUITS
+    played_so_far = deck_size - len(board.deck)
+    return played_so_far
+
+def distance_to_go(board):
+    deck_size = board.cards_per_suit * CalculationBoard.NUM_SUITS
+    num_in_foundations = sum(map(len, board.foundations))
+    distance_from_goal = deck_size - num_in_foundations
+    return distance_from_goal
+
+def a_star_priority(board):
+    return distance_traveled(board) + distance_to_go(board)
+
 class BFSSolver(CalculationSolver):
   def __init__(self, board, priority_func):
     super().__init__(board)
@@ -238,13 +259,13 @@ class BFSSolver(CalculationSolver):
     board = self.starting_board
     pb = PrioritizedBoard(self.priority(board), board)
     boards.put(pb)
-    
-    while boards:
+
+    while boards and len(self.played) <= self.limit:
       pb = boards.get()
       board = pb.board
       self.played.add(board)
 
-      print(str(board))
+      # print(str(board))
 
       if board.is_winning():
         return board
@@ -255,73 +276,26 @@ class BFSSolver(CalculationSolver):
           pb = PrioritizedBoard(self.priority(child_board), child_board)
           boards.put(pb)
 
-class IDASolver(CalculationSolver):
-  def __init__(self, board, priority_func):
-    super().__init__(board)
-    self.priority = priority_func
-
-  def solve(self):
-    root = self.starting_board
-    self.threshold = self.priority(root)
-    self.next_threshold = inf
-    self.iters = 0
-
-    # Start the search
-    not_winning = True
-    best_board = None
-    while not_winning:
-      not_winning, best_board = self.dfs(root)
-      self.threshold = self.next_threshold
-      self.next_threshold = inf
-    return best_board
-
-  def dfs(self, board):
-    possible_moves = board.get_possible_moves()
-    children = [CalculationBoard.apply_move_to_board(board, move) for move in possible_moves]
-    # TODO: sort children?
-    for child in children:
-      # If winning, return that board
-      if child.is_winning():
-        return (False, child)
-
-      # TODO: If child has already lost quit early
-
-      # If child is worth expanding, do so
-      cost = self.priority(child)
-      if cost <= self.threshold:
-        not_winning, winner = self.dfs(child)
-        # Break out if child succeeded
-        if not not_winning:
-          return not_winning, winner
-
-      # If the child is not worth expanding, then it can at least
-      # bound our future generations
-      elif cost < self.next_threshold:
-        self.next_threshold = cost
-
-    return (True, None)
-
-
-
+    return board
 
 def play_game(board, player):
     """
     Automates playthrough from board state with given player's playing strategy
     """
-    print("===== STARTING =====")
+    # print("===== STARTING =====")
     while not board.is_winning():
-        print(str(board))
+        # print(str(board))
         possible_moves = board.get_possible_moves()
         if not possible_moves:
-            print("===== LOST :( =====")
+            # print("===== LOST :( =====")
             return False
 
         move = player.choose_best_move(possible_moves)
         new_board = CalculationBoard.apply_move_to_board(board, move)
         board = new_board
 
-    print(str(board))
-    print("===== WON!!! :D =====")
+    # print(str(board))
+    # print("===== WON!!! :D =====")
     return True
     # TODO: keep track of moves
 
@@ -338,17 +312,28 @@ def compare_players(player1, player2, cards_per_suit, num_games):
   print("Player 2 won {0} games".format(results2.count(True)))
 
 def main():
-    cards_per_suit = 5
+    cards_per_suit = 7
     board = CalculationBoard(cards_per_suit)
+
+    print("===== STARTING DECK ======")
+    print(board.deck)
+
+    print("===== COMPARING PLAYERS ========")
     player = RandomPlayer()
     player2 = GreedyPlayer()
     compare_players(player, player2, cards_per_suit, 5)
 
+    print("===== BFS OLD PRIORITY ========")
     bfs = BFSSolver(board, old_priority)
-    bfs.solve()
+    end_board = bfs.solve()
+    print("Num played: {0}".format(len(bfs.played)))
+    print("Num moves: {0}".format(len(end_board.moves)))
 
-    ida = IDASolver(board, old_priority)
-    ida.solve()
+    print("===== BFS A* PRIORITY ========")
+    bfs = BFSSolver(board, a_star_priority)
+    end_board = bfs.solve()
+    print("Num played: {0}".format(len(bfs.played)))
+    print("Num moves: {0}".format(len(end_board.moves)))
 
 if __name__ == "__main__":
     main()
